@@ -109,6 +109,7 @@ jobs:
         uses: KyleMayes/install-llvm-action@v2.0.9
         with:
           version: "19"
+          directory: ${{ github.workspace }}/llvm
 
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
