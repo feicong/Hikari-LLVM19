@@ -98,71 +98,35 @@ jobs:
             echo "archive_name=$archive_name"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install Linux dependencies
+      - name: Install Linux build tools
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build llvm-19-dev clang-19
+          sudo apt-get install -y cmake ninja-build
 
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          brew install llvm@19 ninja cmake
-
-      - name: Install Windows dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $llvmVersion = "19.1.7"
-          $installerUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-${llvmVersion}/LLVM-${llvmVersion}-win64.exe"
-          $installerPath = Join-Path $env:RUNNER_TEMP "LLVM-installer.exe"
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-          Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2.0.9
+        with:
+          version: "19"
 
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Build (Linux)
-        if: runner.os == 'Linux'
+      - name: Build
         shell: bash
         run: |
           set -euo pipefail
+          extra_flags=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            extra_flags="-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+          fi
           cmake -G Ninja -S . -B ./build \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLT_LLVM_INSTALL_DIR=/usr/lib/llvm-19
-          cmake --build ./build --parallel
-
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          LLVM_DIR="$(brew --prefix llvm@19)"
-          cmake -G Ninja -S . -B ./build \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLT_LLVM_INSTALL_DIR="$LLVM_DIR"
-          cmake --build ./build --parallel
-
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -G Ninja -S . -B ./build \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL \
-            -DLT_LLVM_INSTALL_DIR="C:/Program Files/LLVM"
+            -DLT_LLVM_INSTALL_DIR="$LLVM_PATH" \
+            $extra_flags
           cmake --build ./build --parallel
 
       - name: Package artifact
