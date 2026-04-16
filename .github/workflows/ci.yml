@@ -1,0 +1,261 @@
+# Copyright (c) 2025-2026 fei_cong(https://github.com/feicong/feicong-course)
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 目标Release标签。留空时使用当前分支名
+        required: false
+        default: ""
+        type: string
+      upload:
+        description: 是否上传到Release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            runs_on: ubuntu-24.04
+            lib_name: libHikari.so
+            archive_ext: tar.xz
+          - label: macos
+            runs_on: macos-15
+            lib_name: libHikari.dylib
+            archive_ext: tar.xz
+          - label: windows
+            runs_on: windows-2025
+            lib_name: Hikari.dll
+            archive_ext: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compute variables
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_tag='${{ inputs.release_tag }}'
+          if [ -z "$release_tag" ]; then
+            release_tag='${{ github.ref_name }}'
+          fi
+          release_tag_safe="$(printf '%s' "$release_tag" | sed 's/[^A-Za-z0-9._-]/-/g')"
+
+          case "${RUNNER_OS}" in
+            Linux)
+              case "$(uname -m)" in
+                x86_64)  host="x86_64-linux-gnu" ;;
+                aarch64) host="aarch64-linux-gnu" ;;
+                *)       host="$(uname -m)-linux-gnu" ;;
+              esac
+              ;;
+            macOS)
+              case "$(uname -m)" in
+                x86_64) host="x86_64-apple-darwin" ;;
+                arm64)  host="aarch64-apple-darwin" ;;
+                *)      host="$(uname -m)-apple-darwin" ;;
+              esac
+              ;;
+            Windows)
+              case "${PROCESSOR_ARCHITECTURE}" in
+                AMD64) host="x86_64-pc-windows-msvc" ;;
+                ARM64) host="aarch64-pc-windows-msvc" ;;
+                *)     host="unknown-pc-windows-msvc" ;;
+              esac
+              ;;
+          esac
+
+          archive_name="Hikari-${release_tag_safe}-${host}.${{ matrix.archive_ext }}"
+
+          {
+            echo "release_tag=$release_tag"
+            echo "archive_name=$archive_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Install LLVM (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: KyleMayes/install-llvm-action@v2.0.9
+        with:
+          version: "19"
+          directory: ${{ github.workspace }}/llvm
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "19.1.7"
+          $triple = "x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/clang+llvm-$version-$triple.tar.xz"
+          $llvmDir = "$env:GITHUB_WORKSPACE\llvm"
+          New-Item -ItemType Directory -Force -Path $llvmDir | Out-Null
+          $archive = Join-Path $env:TEMP "llvm.tar.xz"
+          Write-Host "Downloading LLVM $version for Windows..."
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          Write-Host "Extracting LLVM..."
+          tar -xf $archive -C $llvmDir --strip-components=1
+          "LLVM_PATH=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Fix DIA SDK path for LLVM prebuilt (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The prebuilt LLVM Windows binaries reference diaguids.lib from VS 2019.
+          # On this runner only VS 2022 is present, so create the expected path.
+          $vs2019DiaDir = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64"
+          if (-not (Test-Path "$vs2019DiaDir\diaguids.lib")) {
+            $candidates = @(
+              "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files\Microsoft Visual Studio\2022\Professional\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\DIA SDK\lib\amd64\diaguids.lib"
+            )
+            $src = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $src) {
+              Write-Error "Could not find diaguids.lib in any known VS installation path."
+              exit 1
+            }
+            New-Item -ItemType Directory -Force -Path $vs2019DiaDir | Out-Null
+            Copy-Item $src $vs2019DiaDir
+            Write-Host "Copied diaguids.lib from $src"
+          }
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra_flags=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            LLVM_PATH_UNIX="$(cygpath -u "$LLVM_PATH")"
+            extra_flags="-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+          else
+            LLVM_PATH_UNIX="$LLVM_PATH"
+          fi
+          cmake -G Ninja -S . -B ./build \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLT_LLVM_INSTALL_DIR="${LLVM_PATH_UNIX}" \
+            $extra_flags
+          cmake --build ./build --parallel
+
+      - name: Package artifact
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_dir="$RUNNER_TEMP/hikari-package"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            package_dir="$(cygpath -u "$package_dir")"
+          fi
+          mkdir -p "$package_dir"
+
+          find build -name "${{ matrix.lib_name }}" -exec cp {} "$package_dir/" \;
+
+          if [ -z "$(ls -A "$package_dir")" ]; then
+            echo "未找到构建产物 ${{ matrix.lib_name }}" >&2
+            exit 1
+          fi
+
+          archive_path="$GITHUB_WORKSPACE/${{ steps.vars.outputs.archive_name }}"
+
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            archive_path_win="$(cygpath -w "$archive_path")"
+            package_dir_win="$(cygpath -w "$package_dir")"
+            powershell -NoProfile -Command \
+              "Compress-Archive -Path '${package_dir_win}\*' -DestinationPath '$archive_path_win' -Force"
+          else
+            tar -C "$package_dir" -cJf "$archive_path" .
+          fi
+
+          echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}-hikari
+          path: ${{ steps.package.outputs.archive_path }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.upload == true }}
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute release tag
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag='${{ inputs.release_tag }}'
+          if [ -z "$release_tag" ]; then
+            release_tag='${{ github.ref_name }}'
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Update release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ steps.vars.outputs.release_tag }}" "${{ github.sha }}"
+          git push origin "refs/tags/${{ steps.vars.outputs.release_tag }}" --force
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Hikari-LLVM19 (${{ steps.vars.outputs.release_tag }})
+          files: release-assets/*
+          make_latest: true

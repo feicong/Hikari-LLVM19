@@ -20,10 +20,20 @@ target_include_directories(Hikari PRIVATE ${CMAKE_SOURCE_DIR}/obfuscation)
 
 add_dependencies(Hikari intrinsics_gen LLVMLinker)
 
-llvm_map_components_to_libnames(llvm_libs core support irreader linker passes)
-target_link_libraries(Hikari PRIVATE ${llvm_libs})
+if(WIN32 AND NOT MINGW)
+  # On Windows (MSVC/clang-cl), link LLVM static libraries explicitly.
+  llvm_map_components_to_libnames(llvm_libs core support irreader linker passes)
+  target_link_libraries(Hikari PRIVATE ${llvm_libs})
+elseif(APPLE)
+  # On macOS, allow undefined LLVM symbols to be resolved at runtime from the
+  # host process (e.g. clang). This avoids RTTI symbol resolution issues with
+  # the pre-built LLVM static libraries (built with -fno-rtti).
+  target_link_options(Hikari PRIVATE -undefined dynamic_lookup)
+endif()
+# On Linux, undefined symbols in a shared library are resolved at runtime from
+# the host process, so no explicit LLVM linking is needed.
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if (MINGW)
     set_target_properties(Hikari PROPERTIES
         LINK_FLAGS "-static -static-libgcc -Wl,-Bstatic,--whole-archive -lwinpthread -lstdc++ -Wl,--no-whole-archive -Wl,-Bdynamic"
     )
