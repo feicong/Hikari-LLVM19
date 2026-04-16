@@ -132,6 +132,31 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Fix DIA SDK path for LLVM prebuilt (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The prebuilt LLVM Windows binaries reference diaguids.lib from VS 2019.
+          # On this runner only VS 2022 is present, so create the expected path.
+          $vs2019DiaDir = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64"
+          if (-not (Test-Path "$vs2019DiaDir\diaguids.lib")) {
+            $candidates = @(
+              "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files\Microsoft Visual Studio\2022\Professional\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\DIA SDK\lib\amd64\diaguids.lib",
+              "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\DIA SDK\lib\amd64\diaguids.lib"
+            )
+            $src = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $src) {
+              Write-Error "Could not find diaguids.lib in any known VS installation path."
+              exit 1
+            }
+            New-Item -ItemType Directory -Force -Path $vs2019DiaDir | Out-Null
+            Copy-Item $src $vs2019DiaDir
+            Write-Host "Copied diaguids.lib from $src"
+          }
+
       - name: Build
         shell: bash
         run: |
