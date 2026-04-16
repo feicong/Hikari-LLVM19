@@ -105,11 +105,28 @@ jobs:
           set -euo pipefail
           sudo apt-get install -y cmake ninja-build
 
-      - name: Install LLVM
+      - name: Install LLVM (Linux/macOS)
+        if: runner.os != 'Windows'
         uses: KyleMayes/install-llvm-action@v2.0.9
         with:
           version: "19"
           directory: ${{ github.workspace }}/llvm
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "19.1.7"
+          $triple = "x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/clang+llvm-$version-$triple.tar.xz"
+          $llvmDir = "$env:GITHUB_WORKSPACE\llvm"
+          New-Item -ItemType Directory -Force -Path $llvmDir | Out-Null
+          $archive = Join-Path $env:TEMP "llvm.tar.xz"
+          Write-Host "Downloading LLVM $version for Windows..."
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          Write-Host "Extracting LLVM..."
+          tar -xf $archive -C $llvmDir --strip-components=1
+          "LLVM_PATH=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Setup MSVC environment
         if: runner.os == 'Windows'
@@ -121,12 +138,15 @@ jobs:
           set -euo pipefail
           extra_flags=""
           if [ "${RUNNER_OS}" = "Windows" ]; then
+            LLVM_PATH_UNIX="$(cygpath -u "$LLVM_PATH")"
             extra_flags="-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+          else
+            LLVM_PATH_UNIX="$LLVM_PATH"
           fi
           cmake -G Ninja -S . -B ./build \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLT_LLVM_INSTALL_DIR="$LLVM_PATH" \
+            -DLT_LLVM_INSTALL_DIR="${LLVM_PATH_UNIX}" \
             $extra_flags
           cmake --build ./build --parallel
 
