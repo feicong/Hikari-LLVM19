@@ -23,7 +23,7 @@ add_dependencies(Hikari intrinsics_gen LLVMLinker)
 llvm_map_components_to_libnames(llvm_libs core support irreader linker passes)
 target_link_libraries(Hikari PRIVATE ${llvm_libs})
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if (MINGW)
     set_target_properties(Hikari PROPERTIES
         LINK_FLAGS "-static -static-libgcc -Wl,-Bstatic,--whole-archive -lwinpthread -lstdc++ -Wl,--no-whole-archive -Wl,-Bdynamic"
     )
